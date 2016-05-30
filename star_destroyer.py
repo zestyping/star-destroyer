@@ -13,7 +13,7 @@
 
 To run this over your code, provide the root path to your files, like so:
 
-    python star_destroyer.py /path/to/files
+    python -m star_destroyer /path/to/files
 
 This would scan any Python files at /path/to/files/*.py.  If you want to
 process a package, provide the path to the directory containing the package,
@@ -24,9 +24,9 @@ that your code imports.
 
 Running with just a path will print out the results of the scan and the edits
 that would be made, without actually performing the edits.  To actually edit
-your files, run star_destroyer.py with the -e option, like so:
+your files, run star_destroyer with the -e option, like so:
 
-    python star_destroyer.py -e /path/to/files
+    python -m star_destroyer -e /path/to/files
 
 To run the tests, execute 'py.test' using Python 2.7 or Python 3.
 """
@@ -346,17 +346,29 @@ def show_results(modules, import_map, usage_map):
     usage_map.dump()
 
 if __name__ == '__main__':
-    if sys.argv[1] == '-t':
+    args = sys.argv[1:]
+    if not args or '-h' in args or '--help' in args:
+        print(__doc__)
+
+    elif '-t' in args:
+        args.pop(args.index('-t'))
+        [root_path, import_map_path, usage_map_path] = args
+
         import pickle
-        modules, import_map, usage_map = scan(sys.argv[2])
-        with open(sys.argv[3], 'wb') as out:
+        modules, import_map, usage_map = scan(root_path)
+        with open(import_map_path, 'wb') as out:
             pickle.dump(import_map.map, out)
-        with open(sys.argv[4], 'wb') as out:
+        with open(usage_map_path, 'wb') as out:
             pickle.dump(usage_map.map, out)
-    elif sys.argv[1] == '-e':
-        modules, import_map, usage_map = scan(sys.argv[2])
+
+    elif '-e' in args:
+        args.pop(args.index('-e'))
+        [root_path] = args
+        modules, import_map, usage_map = scan(root_path)
         edit(modules, import_map, usage_map, actually_write=True)
+
     else:
-        modules, import_map, usage_map = scan(sys.argv[1])
+        [root_path] = args
+        modules, import_map, usage_map = scan(root_path)
         show_results(modules, import_map, usage_map)
         edit(modules, import_map, usage_map, actually_write=False)
