@@ -131,7 +131,7 @@ class ImportMap:
     def dump(self):
         """Prints out the contents of the import map."""
         for modpath in sorted(self.map):
-            title = 'Names in %s' % modpath
+            title = 'Imports in %s' % modpath
             print('\n' + title + '\n' + '-'*len(title))
             for name, value in sorted(self.map.get(modpath, {}).items()):
                 print('  %s -> %s' % (name, ', '.join(sorted(value))))
