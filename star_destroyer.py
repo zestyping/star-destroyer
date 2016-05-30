@@ -225,7 +225,7 @@ class StarDestroyer:
         self.all_used = set.union(*(usage_map.get_used_origins(modpath)
                                     for modpath in usage_map.get_modpaths()))
 
-    def edit_module(self, modpath, path, node, actually_write=False):
+    def edit_module(self, pkgpath, modpath, path, node, actually_write=False):
         lines = open(path).readlines()
         original_lines = lines[:]
 
@@ -245,7 +245,7 @@ class StarDestroyer:
             print('\n--- %s ---' % path, file=sys.stderr)
 
         for node in import_stars:
-            frompath = node.module
+            frompath = resolve_frompath(pkgpath, node.module, node.level)
             ln = node.lineno - 1
             start = node.col_offset
 
@@ -253,9 +253,13 @@ class StarDestroyer:
             end = orig.index('*') + 1
             names = [name for name in self.import_map.get_star_names(frompath)
                      if modpath + '.' + name in self.all_used]
-            imp = 'from %s import %s' % (node.module, ', '.join(names))
-            print('%s  ==>  %s' % (orig[start:end], imp), file=sys.stderr)
-            lines[ln] = orig[:start] + imp + orig[end:]
+            imp = ('from %s import %s' %
+                   ('.'*node.level + node.module, ', '.join(names))
+                   if names else '')
+            print('%s  ==>  %s' % (orig[start:end], imp or '(deleted)'),
+                  file=sys.stderr)
+            lines[ln] = (orig[:start] + imp + orig[end:]).rstrip()
+            lines[ln] += '\n' if lines[ln] else ''
 
         if lines != original_lines:
             if actually_write:
@@ -299,7 +303,8 @@ def edit(modules, import_map, usage_map, actually_write=False):
     # Finally, edit the 'import *' lines in all the modules.
     star_destroyer = StarDestroyer(import_map, usage_map)
     for (pkgpath, modpath, path, node) in modules:
-        if star_destroyer.edit_module(modpath, path, node, actually_write):
+        if star_destroyer.edit_module(
+            pkgpath, modpath, path, node, actually_write):
             if actually_write:
                 print('Edited %s' % path, file=sys.stderr)
 
