@@ -75,6 +75,23 @@ def get_module_files(roots):
                             yield module, os.path.join(path, file)
 
 
+# Every module imports some names, uses some names, and exports some names.
+#
+# Each import copies a name in some other module to become a name in the
+# current scope; the "origin" of the import is the location of the original
+# name in package.module.name form.
+#
+# Each statement uses some of the names that are in scope; associated with
+# each name is the set of all possible external origins for that name.
+# Sometimes this set is empty (e.g. for the name 'x' just after 'x = 3');
+# sometimes it's a set of one possibility (e.g. for the name 'foo' immediately
+# after 'import foo'); and sometimes it contains multiple possibilities (e.g.
+# for the name 'x' after 'import foo as x; if y: import bar as x').
+#
+# Exports only matter at the end of the module; we determine these by
+# actually importing the module and looking for all the names (or __all__).
+
+
 class ScopeStack:
     """A stack of scopes; each scope is a dictionary of variable names."""
 
@@ -94,7 +111,15 @@ class ScopeStack:
         self.dicts.append({})
 
     def pop(self):
-        return self.dicts.pop()
+        self.dicts.pop()
+
+
+def scan_module(modpath, ast):
+    """Scans a module's AST, returning a set of all origins used in the module.
+    During the scan, scope_stack maps each name in scope to its set of possible
+    origins; whenever a name is used, its origins are added to the set of all
+    origins used by the module."""
+
 
 
 class ReferenceGraph:
@@ -117,8 +142,8 @@ class ReferenceGraph:
         in this module (each definition site in package.module.name form).
         During the scan, scope_stack tracks what has been imported by mapping
         each name to the set of possible source definitions that it might
-        refer to (there can be multiple possibilities due to if-statements),
-        and then when a name is used it gets added to definitions_used."""
+        refer to (there can be multiple possibilities due to if-statements);
+        when a name is used it gets added to definitions_used."""
 
         scope_stack = ScopeStack()  # {name: set of definitions it could be}
         scope_levels = [0]  # indentation level of each scope in the stack
