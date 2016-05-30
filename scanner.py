@@ -72,9 +72,9 @@ class ImportMap:
                 print('ERROR: Failed to import %s!' % modpath, file=sys.stderr)
                 self.star_names[modpath] = []
             else:
-                self.star_names[modpath] = getattr(
+                self.star_names[modpath] = sorted(getattr(
                     module, '__all__',
-                    [name for name in dir(module) if not name.startswith('_')])
+                    [name for name in dir(module) if not name.startswith('_')]))
         return self.star_names[modpath]
 
     def add(self, modpath, name, origin):
@@ -206,6 +206,9 @@ class UsageMap:
     def get_used_origins(self, modpath):
         return self.map.get(modpath, set())
 
+    def get_modpaths(self):
+        return self.map.keys()
+
     def dump(self):
         """Prints out the contents of the usage map."""
         for modpath in sorted(self.map):
@@ -215,8 +218,54 @@ class UsageMap:
                 print('  %s' % origin)
 
 
+class StarDestroyer:
+    def __init__(self, import_map, usage_map):
+        self.import_map = import_map
+        self.usage_map = usage_map
+        self.all_used = set.union(*(usage_map.get_used_origins(modpath)
+                                    for modpath in usage_map.get_modpaths()))
+
+    def edit_module(self, modpath, path, node, actually_write=False):
+        lines = open(path).readlines()
+        original_lines = lines[:]
+
+        import_stars = []
+
+        def find_import_stars(node):
+            if node_type(node) == 'ImportFrom':
+                for binding in node.names:
+                    if binding.name == '*':
+                        import_stars.append(node)
+            else:
+                for_each_child(node, find_import_stars)
+
+        for_each_child(node, find_import_stars)
+
+        if import_stars:
+            print('\n--- %s ---' % path, file=sys.stderr)
+
+        for node in import_stars:
+            frompath = node.module
+            ln = node.lineno - 1
+            start = node.col_offset
+
+            orig = original_lines[ln]
+            end = orig.index('*') + 1
+            names = [name for name in self.import_map.get_star_names(frompath)
+                     if modpath + '.' + name in self.all_used]
+            imp = 'from %s import %s' % (node.module, ', '.join(names))
+            print('%s  ==>  %s' % (orig[start:end], imp), file=sys.stderr)
+            lines[ln] = orig[:start] + imp + orig[end:]
+
+        if lines != original_lines:
+            if actually_write:
+                with open(path, 'w') as file:
+                    file.write(''.join(lines))
+            return True
+
+
 def get_modules(root_path):
-    """Gets (pkgpath, modpath, ast) triples for all modules in a file tree."""
+    """Gets (pkgpath, modpath, path, ast) for all modules in a file tree."""
     for dir_path, dir_names, file_names in os.walk(root_path):
         assert dir_path[:len(root_path)] == root_path
         subdir_path = dir_path[len(root_path):]
@@ -227,7 +276,7 @@ def get_modules(root_path):
                 pkgpath = '.'.join(package_parts)
                 modpath = (pkgpath if name == '__init__.py' else
                            '.'.join(package_parts + [name[:-3]]))
-                yield (pkgpath, modpath, ast.parse(open(path).read()))
+                yield (pkgpath, modpath, path, ast.parse(open(path).read()))
 
 def scan(root_path):
     modules = list(get_modules(root_path))
@@ -235,19 +284,28 @@ def scan(root_path):
     # Scan all the modules and collect a map of origins.
     sys.path.append(root_path)
     import_map = ImportMap(find_module, importlib.import_module)
-    for (pkgpath, modpath, node) in modules:
+    for (pkgpath, modpath, path, node) in modules:
         # print('Scanning: %s' % modpath, file=sys.stderr)
         import_map.scan_module(pkgpath, modpath, node)
 
     # Scan all the modules and look at all the names loaded.
     usage_map = UsageMap(import_map)
-    for (pkgpath, modpath, node) in modules:
+    for (pkgpath, modpath, path, node) in modules:
         usage_map.scan_module(modpath, node)
 
     return modules, import_map, usage_map
 
+def edit(modules, import_map, usage_map, actually_write=False):
+    # Finally, edit the 'import *' lines in all the modules.
+    star_destroyer = StarDestroyer(import_map, usage_map)
+    for (pkgpath, modpath, path, node) in modules:
+        if star_destroyer.edit_module(modpath, path, node, actually_write):
+            if actually_write:
+                print('Edited %s' % path, file=sys.stderr)
+
+
 def show_results(modules, import_map, usage_map):
-    print('\n=== NAME MAPPINGS ===')
+    print('\n=== IMPORT MAPPINGS ===')
     import_map.dump()
 
     print('\n=== ORIGINS USED ===')
@@ -261,6 +319,10 @@ if __name__ == '__main__':
             pickle.dump(import_map.map, out)
         with open(sys.argv[4], 'wb') as out:
             pickle.dump(usage_map.map, out)
+    elif sys.argv[1] == '-e':
+        modules, import_map, usage_map = scan(sys.argv[2])
+        edit(modules, import_map, usage_map, actually_write=True)
     else:
         modules, import_map, usage_map = scan(sys.argv[1])
         show_results(modules, import_map, usage_map)
+        edit(modules, import_map, usage_map, actually_write=False)
