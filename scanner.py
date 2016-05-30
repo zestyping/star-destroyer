@@ -190,7 +190,7 @@ def get_modules(root_path):
                 yield (pkgpath, modpath, ast.parse(open(path).read()))
 
 
-def destroy_stars(root_path):
+def scan(root_path):
     modules = list(get_modules(root_path))
 
     # Scan all the modules and collect a map of origins.
@@ -205,6 +205,9 @@ def destroy_stars(root_path):
     for (pkgpath, modpath, node) in modules:
         name_resolver.scan_module(modpath, node)
 
+    return modules, origin_map, name_resolver
+
+def show_results(modules, origin_map, name_resolver):
     print('\n=== NAME MAPPINGS ===')
 
     for (pkgpath, modpath, node) in modules:
@@ -221,6 +224,14 @@ def destroy_stars(root_path):
         for origin in sorted(name_resolver.get_used_origins(modpath)):
             print('  %s' % origin)
 
-
 if __name__ == '__main__':
-    destroy_stars(sys.argv[1])
+    if sys.argv[1] == '-t':
+        import pickle
+        modules, origin_map, name_resolver = scan(sys.argv[2])
+        with open(sys.argv[3], 'wb') as out:
+            pickle.dump(origin_map.map, out)
+        with open(sys.argv[4], 'wb') as out:
+            pickle.dump(name_resolver.usage_map, out)
+    else:
+        modules, origin_map, name_resolver = scan(sys.argv[1])
+        show_results(modules, origin_map, name_resolver)
