@@ -13,7 +13,6 @@ import importlib
 import os
 import sys
 
-
 def node_type(node):
     """Returns the name of an AST node's class."""
     if isinstance(node, ast.AST):
@@ -40,16 +39,15 @@ def resolve_frompath(pkgpath, relpath, level=0):
 
 def find_module(modpath):
     """Determines whether a module exists with the given modpath."""
-    if hasattr(importlib, 'find_loader'):
-        loader = importlib.find_loader(modpath)
-        if loader:
-            return loader.path if hasattr(loader, 'path') else True
-    else:
-        relative_path = modpath.replace('.', '/') + '.py'
-        for root_path in sys.path:
-            path = os.path.join(root_path, relative_path)
-            if os.path.isfile(path):
-                return path
+    module_path = modpath.replace('.', '/') + '.py'
+    init_path = modpath.replace('.', '/') + '/__init__.py'
+    for root_path in sys.path:
+        path = os.path.join(root_path, module_path)
+        if os.path.isfile(path):
+            return path
+        path = os.path.join(root_path, init_path)
+        if os.path.isfile(path):
+            return path
 
 
 class ImportMap:
@@ -60,6 +58,9 @@ class ImportMap:
         self.star_names = {}  # {modpath: [name, ...]}
         self.find_module = find_module
         self.import_module = import_module
+
+    def __repr__(self):
+        return '<ImportMap>'
 
     def get_star_names(self, modpath):
         """Returns all the names imported by 'import *' from a given module."""
@@ -143,6 +144,9 @@ class UsageMap:
         self.import_map = import_map
         self.map = {}
 
+    def __repr__(self):
+        return '<UsageMap>'
+
     def scan_module(self, modpath, node):
         """Scans a module, collecting all used origins, assuming that modules
         are obtained only by dotted paths and no other kinds of expressions."""
@@ -152,11 +156,15 @@ class UsageMap:
         def get_origins(modpath, name):
             """Returns the chain of all origins for a given name in a module."""
             origins = set()
-            for origin in self.import_map.get_origins(modpath, name):
-                if origin not in origins:
-                    origins.add(origin)
-                    if '.' in origin:
-                        origins.update(get_origins(*origin.rsplit('.', 1)))
+
+            def walk_origins(modpath, name):
+                for origin in self.import_map.get_origins(modpath, name):
+                    if origin not in origins:
+                        origins.add(origin)
+                        if '.' in origin:
+                            walk_origins(*origin.rsplit('.', 1))
+
+            walk_origins(modpath, name)
             return origins
 
         def get_origins_for_node(node):
@@ -165,9 +173,9 @@ class UsageMap:
             if node_type(node) == 'Name' and node_type(node.ctx) == 'Load':
                 return {modpath + '.' + node.id} | get_origins(modpath, node.id)
             if node_type(node) == 'Attribute' and node_type(node.ctx) == 'Load':
-                return set.union(set(), *(
+                return set.union(set(), *[
                     {parent + '.' + node.attr} | get_origins(parent, node.attr)
-                    for parent in get_origins_for_node(node.value)))
+                    for parent in get_origins_for_node(node.value)])
             return set()
 
         def get_origins_used_by_node(node):
@@ -221,7 +229,6 @@ def get_modules(root_path):
                            '.'.join(package_parts + [name[:-3]]))
                 yield (pkgpath, modpath, ast.parse(open(path).read()))
 
-
 def scan(root_path):
     modules = list(get_modules(root_path))
 
@@ -239,14 +246,12 @@ def scan(root_path):
 
     return modules, import_map, usage_map
 
-
 def show_results(modules, import_map, usage_map):
     print('\n=== NAME MAPPINGS ===')
     import_map.dump()
 
     print('\n=== ORIGINS USED ===')
     usage_map.dump()
-
 
 if __name__ == '__main__':
     if sys.argv[1] == '-t':
