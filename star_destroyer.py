@@ -1,10 +1,34 @@
-"""A scanner for symbolic dependencies between modules.
+# Copyright 2016 Ka-Ping Yee.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not
+# use this file except in compliance with the License.  You may obtain a copy
+# of the License at: http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software distrib-
+# uted under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+# OR CONDITIONS OF ANY KIND, either express or implied.  See the License for
+# specific language governing permissions and limitations under the License.
 
-Each import copies a name in some other module to become a name in the
-current scope; the "origin" of the import is the location of the original
-name in package.module.name form.  Note that "a.b" could mean the name b
-in the module a, or the module b in the package a; these two things are
-indistinguishable from the referring module.
+"""Eliminates 'import *' from your modules.
+
+To run this over your code, provide the root path to your files, like so:
+
+    python star_destroyer.py /path/to/files
+
+This would scan any Python files at /path/to/files/*.py.  If you want to
+process a package, provide the path to the directory containing the package,
+not the package directory itself.  The path you provide should be a path as
+it would appear in sys.path.  PYTHONPATH should also be set as it would be
+set during a normal run of your code; it will be used to find other modules
+that your code imports.
+
+Running with just a path will print out the results of the scan and the edits
+that would be made, without actually performing the edits.  To actually edit
+your files, run star_destroyer.py with the -e option, like so:
+
+    python star_destroyer.py -e /path/to/files
+
+To run the tests, execute 'py.test' using Python 2.7 or Python 3.
 """
 
 from __future__ import print_function
@@ -52,6 +76,12 @@ def find_module(modpath):
 
 class ImportMap:
     """Collects a map, for each module, from imported names to their origins."""
+
+    # Each import copies a name in some other module to become a name in the
+    # current scope; the "origin" of the import is the location of the original
+    # name in package.module.name form.  Note that "a.b" could mean the name b
+    # in the module a, or the module b in the package a; these two things are
+    # indistinguishable from the referring module.
 
     def __init__(self, find_module, import_module):
         self.map = {}  # {modpath: {name: {origin, ...}}}
