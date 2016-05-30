@@ -7,9 +7,11 @@ in the module a, or the module b in the package a; these two things are
 indistinguishable from the referring module.
 """
 
+from __future__ import print_function
 import ast
 import importlib
 import os
+import sys
 
 
 def node_type(node):
@@ -28,27 +30,51 @@ def for_each_child(node, callback):
         elif isinstance(value, ast.AST):
             callback(value)
 
-def resolve_modpath(base, relpath, level=0):
+def resolve_frompath(pkgpath, relpath, level=0):
     """Resolves the path of the module referred to by 'from ..x import y'."""
     if level == 0:
         return relpath
-    parts = base.split('.') + ['_']
-    parts = parts[:-level] + relpath.split('.')
+    parts = pkgpath.split('.') + ['_']
+    parts = parts[:-level] + (relpath.split('.') if relpath else [])
     return '.'.join(parts)
 
-def get_star_names(modpath):
-    """Returns all the names imported by 'import *' from a given module."""
-    module = importlib.import_module(modpath)
-    if hasattr(module, '__all__'):
-        return module.__all__
-    return [name for name in dir(module) if not name.startswith('_')]
+def find_module(modpath):
+    """Determines whether a module exists with the given modpath."""
+    if hasattr(importlib, 'find_loader'):
+        loader = importlib.find_loader(modpath)
+        if loader:
+            return loader.path if hasattr(loader, 'path') else True
+    else:
+        relative_path = modpath.replace('.', '/') + '.py'
+        for root_path in sys.path:
+            path = os.path.join(root_path, relative_path)
+            if os.path.isfile(path):
+                return path
 
 
 class OriginMap:
     """Collects a map, for each module, from names to their origins."""
 
-    def __init__(self):
+    def __init__(self, find_module, import_module):
         self.origins = {}  # {modpath: {name: {origin, ...}}}
+        self.star_names = {}  # {modpath: [name, ...]}
+        self.find_module = find_module
+        self.import_module = import_module
+
+    def get_star_names(self, modpath):
+        """Returns all the names imported by 'import *' from a given module."""
+        if modpath not in self.star_names:
+            print('Importing %s to resolve import *' % modpath, file=sys.stderr)
+            try:
+                module = self.import_module(modpath)
+            except ImportError:
+                print('ERROR: Failed to import %s!' % modpath, file=sys.stderr)
+                self.star_names[modpath] = []
+            else:
+                self.star_names[modpath] = getattr(
+                    module, '__all__',
+                    [name for name in dir(module) if not name.startswith('_')])
+        return self.star_names[modpath]
 
     def add(self, modpath, name, origin):
         """Adds a possible origin for the given name in the given module."""
@@ -61,10 +87,11 @@ class OriginMap:
         parent = parts[0]
         for part in parts[1:]:
             child = parent + '.' + part
-            self.add(parent, part, child)  # TODO: skip if child isn't a module
+            if self.find_module(child):
+                self.add(parent, part, child)
             parent = child
 
-    def scan_module(self, modpath, node):
+    def scan_module(self, pkgpath, modpath, node):
         """Scans a module, collecting possible origins for all names, assuming
         names can only become bound to values in other modules by import."""
 
@@ -79,11 +106,11 @@ class OriginMap:
                     self.add_package_origins(name)
 
             elif node_type(node) == 'ImportFrom':
-                frompath = resolve_modpath(modpath, node.module, node.level)
+                frompath = resolve_frompath(pkgpath, node.module, node.level)
                 for binding in node.names:
                     name, asname = binding.name, binding.asname
                     if name == '*':
-                        for name in get_star_names(frompath):
+                        for name in self.get_star_names(frompath):
                             self.add(modpath, name, frompath + '.' + name)
                         self.add_package_origins(frompath)
                     else:
@@ -97,23 +124,26 @@ class OriginMap:
 
 def get_origins(root_path):
     """Scans some modules and collects an overall origin map."""
-    import sys
     sys.path.append(root_path)
 
-    origin_map = OriginMap()
+    origin_map = OriginMap(find_module, importlib.import_module)
     for dir_path, dir_names, file_names in os.walk(root_path):
         assert dir_path[:len(root_path)] == root_path
         subdir_path = dir_path[len(root_path):]
         package_parts = list(filter(lambda x: x, subdir_path.split('/')))
         for name in file_names:
             if name.endswith('.py'):
-                modpath = '.'.join(package_parts + [name[:-3]])
-                node = ast.parse(open(os.path.join(dir_path, name)).read())
-                origin_map.scan_module(modpath, node)
+                path = os.path.join(dir_path, name)
+                pkgpath = '.'.join(package_parts)
+                modpath = (pkgpath if name == '__init__.py' else
+                           '.'.join(package_parts + [name[:-3]]))
+
+                # print('Scanning: %s' % path, file=sys.stderr)
+                node = ast.parse(open(path).read())
+                origin_map.scan_module(pkgpath, modpath, node)
     return origin_map.origins
 
 
 if __name__ == '__main__':
-    import sys
     import pprint
     pprint.pprint(get_origins(sys.argv[1]))
