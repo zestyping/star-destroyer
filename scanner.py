@@ -52,8 +52,8 @@ def find_module(modpath):
                 return path
 
 
-class OriginMap:
-    """Collects a map, for each module, from names to their origins."""
+class ImportMap:
+    """Collects a map, for each module, from imported names to their origins."""
 
     def __init__(self, find_module, import_module):
         self.map = {}  # {modpath: {name: {origin, ...}}}
@@ -129,7 +129,7 @@ class OriginMap:
 
 
 class NameResolver:
-    """Resolves name lookups in modules, using an origin map."""
+    """Resolves name lookups in modules, using an import map."""
 
     def __init__(self, origin_map):
         self.origin_map = origin_map
@@ -195,25 +195,25 @@ def scan(root_path):
 
     # Scan all the modules and collect a map of origins.
     sys.path.append(root_path)
-    origin_map = OriginMap(find_module, importlib.import_module)
+    import_map = ImportMap(find_module, importlib.import_module)
     for (pkgpath, modpath, node) in modules:
         # print('Scanning: %s' % modpath, file=sys.stderr)
-        origin_map.scan_module(pkgpath, modpath, node)
+        import_map.scan_module(pkgpath, modpath, node)
 
     # Scan all the modules and look at all the names loaded.
-    name_resolver = NameResolver(origin_map)
+    name_resolver = NameResolver(import_map)
     for (pkgpath, modpath, node) in modules:
         name_resolver.scan_module(modpath, node)
 
-    return modules, origin_map, name_resolver
+    return modules, import_map, name_resolver
 
-def show_results(modules, origin_map, name_resolver):
+def show_results(modules, import_map, name_resolver):
     print('\n=== NAME MAPPINGS ===')
 
     for (pkgpath, modpath, node) in modules:
         title = 'Names in %s' % modpath
         print('\n' + title + '\n' + '-'*len(title))
-        for name, value in sorted(origin_map.map.get(modpath, {}).items()):
+        for name, value in sorted(import_map.map.get(modpath, {}).items()):
             print('  %s -> %s' % (name, ', '.join(sorted(value))))
 
     print('\n=== ORIGINS USED ===')
@@ -227,11 +227,11 @@ def show_results(modules, origin_map, name_resolver):
 if __name__ == '__main__':
     if sys.argv[1] == '-t':
         import pickle
-        modules, origin_map, name_resolver = scan(sys.argv[2])
+        modules, import_map, name_resolver = scan(sys.argv[2])
         with open(sys.argv[3], 'wb') as out:
-            pickle.dump(origin_map.map, out)
+            pickle.dump(import_map.map, out)
         with open(sys.argv[4], 'wb') as out:
             pickle.dump(name_resolver.usage_map, out)
     else:
-        modules, origin_map, name_resolver = scan(sys.argv[1])
-        show_results(modules, origin_map, name_resolver)
+        modules, import_map, name_resolver = scan(sys.argv[1])
+        show_results(modules, import_map, name_resolver)
