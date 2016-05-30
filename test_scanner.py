@@ -39,11 +39,11 @@ def test_scanner(path):
     for modpath in expected_usage:
         actual_usage[modpath] = sorted(actual_usage.get(modpath, []))
 
-    print('expected imports: %s' % json.dumps(expected_imports))
-    print('  actual imports: %s' % json.dumps(actual_imports))
+    print('expected imports: %s' % json.dumps(expected_imports, sort_keys=1))
+    print('  actual imports: %s' % json.dumps(actual_imports, sort_keys=1))
 
-    print('expected usage: %s' % json.dumps(expected_usage))
-    print('  actual usage: %s' % json.dumps(actual_usage))
+    print('expected usage: %s' % json.dumps(expected_usage, sort_keys=1))
+    print('  actual usage: %s' % json.dumps(actual_usage, sort_keys=1))
 
     assert expected_imports == actual_imports
     assert expected_usage == actual_usage

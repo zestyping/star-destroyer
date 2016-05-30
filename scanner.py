@@ -131,16 +131,25 @@ class ImportMap:
 class NameResolver:
     """Resolves name lookups in modules, using an import map."""
 
-    def __init__(self, origin_map):
-        self.origin_map = origin_map
+    def __init__(self, import_map):
+        self.import_map = import_map
         self.usage_map = {}
 
     def scan_module(self, modpath, node):
         """Scans a module, collecting all used origins, assuming that modules
         are obtained only by dotted paths and no other kinds of expressions."""
 
-        get_origins = self.origin_map.get_origins
         used_origins = self.usage_map.setdefault(modpath, set())
+
+        def get_origins(modpath, name):
+            """Returns the chain of all origins for a given name in a module."""
+            origins = set()
+            for origin in self.import_map.get_origins(modpath, name):
+                if origin not in origins:
+                    origins.add(origin)
+                    if '.' in origin:
+                        origins.update(get_origins(*origin.rsplit('.', 1)))
+            return origins
 
         def get_origins_for_node(node):
             """Returns the set of all possible origins to which the given
