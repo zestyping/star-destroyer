@@ -56,7 +56,7 @@ class OriginMap:
     """Collects a map, for each module, from names to their origins."""
 
     def __init__(self, find_module, import_module):
-        self.origins = {}  # {modpath: {name: {origin, ...}}}
+        self.map = {}  # {modpath: {name: {origin, ...}}}
         self.star_names = {}  # {modpath: [name, ...]}
         self.find_module = find_module
         self.import_module = import_module
@@ -78,7 +78,7 @@ class OriginMap:
 
     def add(self, modpath, name, origin):
         """Adds a possible origin for the given name in the given module."""
-        self.origins.setdefault(modpath, {}).setdefault(name, set()).add(origin)
+        self.map.setdefault(modpath, {}).setdefault(name, set()).add(origin)
 
     def add_package_origins(self, modpath):
         """Whenever you 'import a.b.c', Python automatically binds 'b' in a to
@@ -102,7 +102,8 @@ class OriginMap:
                     if asname:
                         self.add(modpath, asname, name)
                     else:
-                        self.add(modpath, name, name.split('.')[0])
+                        top_name = name.split('.')[0]
+                        self.add(modpath, top_name, top_name)
                     self.add_package_origins(name)
 
             elif node_type(node) == 'ImportFrom':
@@ -117,16 +118,65 @@ class OriginMap:
                         self.add(modpath, asname or name, frompath + '.' + name)
                         self.add_package_origins(frompath + '.' + name)
 
-            for_each_child(node, scan_imports)
+            else:
+                for_each_child(node, scan_imports)
 
         for_each_child(node, scan_imports)
 
+    def get_origins(self, modpath, name):
+        """Returns the set of possible origins for a name in a module."""
+        return self.map.get(modpath, {}).get(name, set())
 
-def get_origins(root_path):
-    """Scans some modules and collects an overall origin map."""
-    sys.path.append(root_path)
 
-    origin_map = OriginMap(find_module, importlib.import_module)
+class NameResolver:
+    """Resolves name lookups in modules, using an origin map."""
+
+    def __init__(self, origin_map):
+        self.origin_map = origin_map
+        self.usage_map = {}
+
+    def scan_module(self, modpath, node):
+        """Scans a module, collecting all used origins, assuming that modules
+        are obtained only by dotted paths and no other kinds of expressions."""
+
+        get_origins = self.origin_map.get_origins
+        used_origins = self.usage_map.setdefault(modpath, set())
+
+        def get_origins_for_node(node):
+            """Returns the set of all possible origins to which the given
+            dotted-path expression might dereference."""
+            if node_type(node) == 'Name' and node_type(node.ctx) == 'Load':
+                return {modpath + '.' + node.id} | get_origins(modpath, node.id)
+            if node_type(node) == 'Attribute' and node_type(node.ctx) == 'Load':
+                return set.union(set(), *(
+                    {parent + '.' + node.attr} | get_origins(parent, node.attr)
+                    for parent in get_origins_for_node(node.value)))
+            return set()
+
+        def get_origins_used_by_node(node):
+            """Returns the set of all possible origins that could be used
+            during dereferencing of the given dotted-path expression."""
+            if node_type(node) == 'Name':
+                return get_origins_for_node(node)
+            if node_type(node) == 'Attribute':
+                return set.union(get_origins_used_by_node(node.value),
+                                 get_origins_for_node(node))
+            return set()
+
+        def scan_loads(node):
+            if node_type(node) in ['Name', 'Attribute']:
+                used_origins.update(get_origins_used_by_node(node))
+            else:
+                for_each_child(node, scan_loads)
+
+        for_each_child(node, scan_loads)
+
+    def get_used_origins(self, modpath):
+        return self.usage_map.get(modpath, set())
+
+
+def get_modules(root_path):
+    """Gets (pkgpath, modpath, ast) triples for all modules in a file tree."""
     for dir_path, dir_names, file_names in os.walk(root_path):
         assert dir_path[:len(root_path)] == root_path
         subdir_path = dir_path[len(root_path):]
@@ -137,13 +187,40 @@ def get_origins(root_path):
                 pkgpath = '.'.join(package_parts)
                 modpath = (pkgpath if name == '__init__.py' else
                            '.'.join(package_parts + [name[:-3]]))
+                yield (pkgpath, modpath, ast.parse(open(path).read()))
 
-                # print('Scanning: %s' % path, file=sys.stderr)
-                node = ast.parse(open(path).read())
-                origin_map.scan_module(pkgpath, modpath, node)
-    return origin_map.origins
+
+def destroy_stars(root_path):
+    modules = list(get_modules(root_path))
+
+    # Scan all the modules and collect a map of origins.
+    sys.path.append(root_path)
+    origin_map = OriginMap(find_module, importlib.import_module)
+    for (pkgpath, modpath, node) in modules:
+        # print('Scanning: %s' % modpath, file=sys.stderr)
+        origin_map.scan_module(pkgpath, modpath, node)
+
+    # Scan all the modules and look at all the names loaded.
+    name_resolver = NameResolver(origin_map)
+    for (pkgpath, modpath, node) in modules:
+        name_resolver.scan_module(modpath, node)
+
+    print('\n=== NAME MAPPINGS ===')
+
+    for (pkgpath, modpath, node) in modules:
+        title = 'Names in %s' % modpath
+        print('\n' + title + '\n' + '-'*len(title))
+        for name, value in sorted(origin_map.map.get(modpath, {}).items()):
+            print('  %s -> %s' % (name, ', '.join(sorted(value))))
+
+    print('\n=== ORIGINS USED ===')
+
+    for (pkgpath, modpath, node) in modules:
+        title = 'Used by %s' % modpath
+        print('\n' + title + '\n' + '-'*len(title))
+        for origin in sorted(name_resolver.get_used_origins(modpath)):
+            print('  %s' % origin)
 
 
 if __name__ == '__main__':
-    import pprint
-    pprint.pprint(get_origins(sys.argv[1]))
+    destroy_stars(sys.argv[1])
