@@ -37,6 +37,8 @@ import importlib
 import os
 import sys
 
+__version__ = '1.0'
+
 def node_type(node):
     """Returns the name of an AST node's class."""
     if isinstance(node, ast.AST):

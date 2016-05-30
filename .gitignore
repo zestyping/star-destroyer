@@ -1,4 +1,5 @@
 .cache
 __pycache__
+build
 *.pyc
 old
