@@ -127,6 +127,14 @@ class ImportMap:
         """Returns the set of possible origins for a name in a module."""
         return self.map.get(modpath, {}).get(name, set())
 
+    def dump(self):
+        """Prints out the contents of the import map."""
+        for modpath in self.map:
+            title = 'Names in %s' % modpath
+            print('\n' + title + '\n' + '-'*len(title))
+            for name, value in sorted(self.map.get(modpath, {}).items()):
+                print('  %s -> %s' % (name, ', '.join(sorted(value))))
+
 
 class NameResolver:
     """Resolves name lookups in modules, using an import map."""
@@ -190,6 +198,14 @@ class NameResolver:
     def get_used_origins(self, modpath):
         return self.usage_map.get(modpath, set())
 
+    def dump(self):
+        """Prints out the contents of the usage map."""
+        for modpath in self.usage_map:
+            title = 'Used by %s' % modpath
+            print('\n' + title + '\n' + '-'*len(title))
+            for origin in sorted(self.get_used_origins(modpath)):
+                print('  %s' % origin)
+
 
 def get_modules(root_path):
     """Gets (pkgpath, modpath, ast) triples for all modules in a file tree."""
@@ -220,25 +236,18 @@ def scan(root_path):
     name_resolver = NameResolver(import_map)
     for (pkgpath, modpath, node) in modules:
         name_resolver.scan_module(modpath, node)
+    name_resolver.dump()
 
     return modules, import_map, name_resolver
 
+
 def show_results(modules, import_map, name_resolver):
     print('\n=== NAME MAPPINGS ===')
-
-    for (pkgpath, modpath, node) in modules:
-        title = 'Names in %s' % modpath
-        print('\n' + title + '\n' + '-'*len(title))
-        for name, value in sorted(import_map.map.get(modpath, {}).items()):
-            print('  %s -> %s' % (name, ', '.join(sorted(value))))
+    import_map.dump()
 
     print('\n=== ORIGINS USED ===')
+    name_resolver.dump()
 
-    for (pkgpath, modpath, node) in modules:
-        title = 'Used by %s' % modpath
-        print('\n' + title + '\n' + '-'*len(title))
-        for origin in sorted(name_resolver.get_used_origins(modpath)):
-            print('  %s' % origin)
 
 if __name__ == '__main__':
     if sys.argv[1] == '-t':
