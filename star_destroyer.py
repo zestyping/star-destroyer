@@ -191,8 +191,7 @@ class UsageMap:
         def scan_loads(node):
             if node_type(node) in ['Name', 'Attribute']:
                 used_origins.update(get_origins_used_by_node(node))
-            else:
-                for_each_child(node, scan_loads)
+            for_each_child(node, scan_loads)
 
         for_each_child(node, scan_loads)
 
