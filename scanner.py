@@ -180,6 +180,13 @@ class NameResolver:
 
         for_each_child(node, scan_loads)
 
+        intermediate_origins = set()
+        for origin in used_origins:
+            parts = origin.split('.')
+            for i in range(1, len(parts)):
+                intermediate_origins.add('.'.join(parts[:i]))
+        used_origins.update(intermediate_origins)
+
     def get_used_origins(self, modpath):
         return self.usage_map.get(modpath, set())
 

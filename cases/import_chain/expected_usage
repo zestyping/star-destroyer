@@ -1,5 +1,5 @@
 {
-    "a": ["a.b", "a.b.c", "a.b.c.d", "a.b.c.d.x", "b", "b.c", "b.c.d", "b.c.d.x", "c", "c.d", "c.d.x", "d", "d.x"],
+    "a": ["a", "a.b", "a.b.c", "a.b.c.d", "a.b.c.d.x", "b", "b.c", "b.c.d", "b.c.d.x", "c", "c.d", "c.d.x", "d", "d.x"],
     "b": [],
     "c": [],
     "d": []
