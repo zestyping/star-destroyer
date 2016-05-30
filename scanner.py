@@ -129,25 +129,25 @@ class ImportMap:
 
     def dump(self):
         """Prints out the contents of the import map."""
-        for modpath in self.map:
+        for modpath in sorted(self.map):
             title = 'Names in %s' % modpath
             print('\n' + title + '\n' + '-'*len(title))
             for name, value in sorted(self.map.get(modpath, {}).items()):
                 print('  %s -> %s' % (name, ', '.join(sorted(value))))
 
 
-class NameResolver:
+class UsageMap:
     """Resolves name lookups in modules, using an import map."""
 
     def __init__(self, import_map):
         self.import_map = import_map
-        self.usage_map = {}
+        self.map = {}
 
     def scan_module(self, modpath, node):
         """Scans a module, collecting all used origins, assuming that modules
         are obtained only by dotted paths and no other kinds of expressions."""
 
-        used_origins = self.usage_map.setdefault(modpath, set())
+        used_origins = self.map.setdefault(modpath, set())
 
         def get_origins(modpath, name):
             """Returns the chain of all origins for a given name in a module."""
@@ -196,11 +196,11 @@ class NameResolver:
         used_origins.update(intermediate_origins)
 
     def get_used_origins(self, modpath):
-        return self.usage_map.get(modpath, set())
+        return self.map.get(modpath, set())
 
     def dump(self):
         """Prints out the contents of the usage map."""
-        for modpath in self.usage_map:
+        for modpath in sorted(self.map):
             title = 'Used by %s' % modpath
             print('\n' + title + '\n' + '-'*len(title))
             for origin in sorted(self.get_used_origins(modpath)):
@@ -233,30 +233,29 @@ def scan(root_path):
         import_map.scan_module(pkgpath, modpath, node)
 
     # Scan all the modules and look at all the names loaded.
-    name_resolver = NameResolver(import_map)
+    usage_map = UsageMap(import_map)
     for (pkgpath, modpath, node) in modules:
-        name_resolver.scan_module(modpath, node)
-    name_resolver.dump()
+        usage_map.scan_module(modpath, node)
 
-    return modules, import_map, name_resolver
+    return modules, import_map, usage_map
 
 
-def show_results(modules, import_map, name_resolver):
+def show_results(modules, import_map, usage_map):
     print('\n=== NAME MAPPINGS ===')
     import_map.dump()
 
     print('\n=== ORIGINS USED ===')
-    name_resolver.dump()
+    usage_map.dump()
 
 
 if __name__ == '__main__':
     if sys.argv[1] == '-t':
         import pickle
-        modules, import_map, name_resolver = scan(sys.argv[2])
+        modules, import_map, usage_map = scan(sys.argv[2])
         with open(sys.argv[3], 'wb') as out:
             pickle.dump(import_map.map, out)
         with open(sys.argv[4], 'wb') as out:
-            pickle.dump(name_resolver.usage_map, out)
+            pickle.dump(usage_map.map, out)
     else:
-        modules, import_map, name_resolver = scan(sys.argv[1])
-        show_results(modules, import_map, name_resolver)
+        modules, import_map, usage_map = scan(sys.argv[1])
+        show_results(modules, import_map, usage_map)
