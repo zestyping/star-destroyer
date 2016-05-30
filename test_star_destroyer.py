@@ -7,7 +7,7 @@ import sys
 import tempfile
 
 CASES_PATH = 'cases'
-SCANNER_PATH = os.path.join(os.path.dirname(__file__), 'scanner.py')
+PROGRAM_PATH = os.path.join(os.path.dirname(__file__), 'star_destroyer.py')
 
 CASE_DIRS = []
 for name in os.listdir(CASES_PATH):
@@ -22,7 +22,7 @@ def test_scanner(path):
     print('running: %s' % path)
     with tempfile.NamedTemporaryFile('rb') as imports_file:
         with tempfile.NamedTemporaryFile('rb') as usage_file:
-            os.spawnl(os.P_WAIT, sys.executable, sys.executable, SCANNER_PATH,
+            os.spawnl(os.P_WAIT, sys.executable, sys.executable, PROGRAM_PATH,
                       '-t', path, imports_file.name, usage_file.name)
             actual_imports = pickle.load(imports_file)
             actual_usage = pickle.load(usage_file)
