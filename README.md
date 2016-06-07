@@ -1,4 +1,4 @@
-== `star_destroyer`: Eliminate `import *` from your modules ==
+## star\_destroyer: Eliminate `import *` from your modules
 
 To run this over your code, provide the root path to your files, like so:
 
