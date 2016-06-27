@@ -315,7 +315,12 @@ def get_modules(root_path):
                 pkgpath = '.'.join(package_parts)
                 modpath = (pkgpath if name == '__init__.py' else
                            '.'.join(package_parts + [name[:-3]]))
-                yield (pkgpath, modpath, path, ast.parse(open(path).read()))
+                try:
+                    node = ast.parse(open(path).read())
+                except SyntaxError:
+                    print('ERROR: Invalid syntax in %s' % path, file=sys.stderr)
+                else:
+                    yield (pkgpath, modpath, path, node)
 
 def scan(root_path):
     modules = list(get_modules(root_path))
