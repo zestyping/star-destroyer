@@ -36,6 +36,7 @@ To run the tests, execute `py.test` using Python 2.7 or Python 3.5.
 """
 
 from __future__ import print_function
+import argparse
 import ast
 import importlib
 import os
@@ -78,6 +79,27 @@ def find_module(modpath):
         path = os.path.join(root_path, init_path)
         if os.path.isfile(path):
             return path
+
+
+def node_to_text(node):
+    """Transforms nodes to a valid python source.
+
+    This is only supported for nodes with the type 'ImportFrom', 'Import', 'Name', 'Attribute', or 'alias'.
+    Additionally, NoneType input will return the empty string.
+    """
+    if node is None:
+        return ""
+    elif node_type(node) == 'ImportFrom':
+        return "from {} import {}".format('.' * node.level + (node.module if node.module is not None else ""),
+                                          ', '.join(node_to_text(name) for name in node.names))
+    elif node_type(node) == 'Import':
+        return "import {}".format(', '.join(node_to_text(name) for name in node.names))
+    elif node_type(node) == 'Name':
+        return node.id
+    elif node_type(node) == 'Attribute':
+        return "{}.{}".format(node_to_text(node.value), node.attr)
+    elif node_type(node) == 'alias':
+        return "{} as {}".format(node.name, node.asname) if node.asname is not None else node.name
 
 
 class ImportMap:
@@ -168,7 +190,7 @@ class ImportMap:
         """Prints out the contents of the import map."""
         for modpath in sorted(self.map):
             title = 'Imports in %s' % modpath
-            print('\n' + title + '\n' + '-'*len(title))
+            print('\n' + title + '\n' + '-' * len(title))
             for name, value in sorted(self.map.get(modpath, {}).items()):
                 print('  %s -> %s' % (name, ', '.join(sorted(value))))
 
@@ -248,9 +270,124 @@ class UsageMap:
         """Prints out the contents of the usage map."""
         for modpath in sorted(self.map):
             title = 'Used by %s' % modpath
-            print('\n' + title + '\n' + '-'*len(title))
+            print('\n' + title + '\n' + '-' * len(title))
             for origin in sorted(self.get_used_origins(modpath)):
                 print('  %s' % origin)
+
+
+class StarImportCollector(ast.NodeVisitor):
+
+    def __init__(self):
+        self.star_imports = []
+
+    def visit_ImportFrom(self, node):
+        if len(node.names) == 1 and node.names[0].name == '*':
+            self.star_imports.append(node)
+
+
+class BaseStarDestroyer(ast.NodeVisitor):
+    """Base class for different methods of removing star-imports.
+
+    After running visit on a module :attr:`changes` will contain a list of (old_node, new_node)-tuples which, when
+    applied transform the AST into a version without star-imports.
+    """
+
+    def __init__(self, import_map, all_used, pkgpath, modpath, star_imports):
+        """Creates an instance.
+
+        :param import_map: An :class:`ImportMap` containing the modules imports.
+        :param all_used: A set of names used in the module.
+        :param pkgpath: The path to the file that defines the module.
+        :param modpath: The qualified name of the module.
+        """
+        self._star_provided_names = {star_import: [name for name
+                                                   in import_map.get_star_names(resolve_frompath(
+                                                       pkgpath, star_import.module, star_import.level))
+                                                   if modpath + '.' + name in all_used]
+                                     for star_import in star_imports}
+        self._provided_names = set.union(*list(set(names) for names in self._star_provided_names.values()))
+        self.changes = []
+
+
+class QualifyStarDestroyer(BaseStarDestroyer):
+    """A :class:`BaseStarDestroyer` that replaces usages of star-imported names with an access to the module."""
+
+    def __init__(self, import_map, all_used, pkgpath, modpath, star_imports, module_aliases=dict()):
+        """Creates an instance.
+
+        :param module_aliases: A dictionary aliases for modules to use. Example: {'numpy', 'np'}
+        See also: :method:`BaseStarDestroyer.__init__`
+        """
+        BaseStarDestroyer.__init__(self, import_map, all_used, pkgpath, modpath, star_imports)
+        self._module_aliases = module_aliases
+
+    def visit_ImportFrom(self, node):
+        new_node = node
+        if node in self._star_provided_names:
+            names = self._star_provided_names[node]
+            if len(names) == 0:
+                new_node = node
+            elif node.level == 0:
+
+                new_node = ast.Import(names=[ast.alias(name=node.module,
+                                                       asname=self._module_aliases.get(
+                                                           node.module.split('.')[-1]))])
+            else:
+                modules = [module for module in node.module.split('.') if module != '']
+                module = '.' * node.level + '.'.join(modules[:-1]) if len(modules) > 1 else None
+                name = modules[-1]
+                new_node = ast.ImportFrom(module=module,
+                                          names=[ast.alias(name=name, asname=self._module_aliases.get(name))],
+                                          level=node.level)
+
+        if node != new_node:
+            if new_node is not None:
+                ast.copy_location(new_node, node)
+            self.changes.append((node, new_node))
+
+    def visit_Name(self, node):
+        new_node = node
+        if node.id in self._provided_names:
+            providing_import = next((star_import for star_import, provided_names in
+                                     self._star_provided_names.items() if node.id in provided_names), None)
+            if providing_import is None:
+                return  # Should not happen, error handling?
+
+            new_providing_name = self._module_aliases.get(providing_import.module.split('.')[-1],
+                                                          providing_import.module.split('.')[-1])
+            new_node = ast.Attribute(value=ast.Name(id=new_providing_name, ctx=ast.Load()), attr=node.id, ctx=node.ctx)
+
+        if node != new_node:
+            if new_node is not None:
+                ast.copy_location(new_node, node)
+            self.changes.append((node, new_node))
+
+
+class ReplaceStarDestroyer(BaseStarDestroyer):
+    """A :class:`BaseStarDestroyer` that adds all uses elements names to the corresponding star-imports."""
+
+    def __init__(self, import_map, all_used, pkgpath, modpath, star_imports):
+        """Creates an instance.
+
+        See also: :method:`BaseStarDestroyer.__init__`
+        """
+        BaseStarDestroyer.__init__(self, import_map, all_used, pkgpath, modpath, star_imports)
+
+    def visit_ImportFrom(self, node):
+        new_node = node
+        if node in self._star_provided_names:
+            names = self._star_provided_names[node]
+            if len(names) == 0:
+                new_node = node
+            else:
+                new_node = ast.ImportFrom(module=node.module,
+                                          names=[ast.alias(name=name, asname=None) for name in names],
+                                          level=node.level)
+
+        if node != new_node:
+            if new_node is not None:
+                ast.copy_location(new_node, node)
+            self.changes.append((node, new_node))
 
 
 class StarDestroyer:
@@ -260,47 +397,59 @@ class StarDestroyer:
         self.all_used = set.union(*(usage_map.get_used_origins(modpath)
                                     for modpath in usage_map.get_modpaths()))
 
-    def edit_module(self, pkgpath, modpath, path, node, actually_write=False):
-        lines = open(path).readlines()
-        original_lines = lines[:]
+    def edit_module(self, pkgpath, modpath, path, node, method, dry_run=True, **kwd):
+        ast.fix_missing_locations(node)
 
-        import_stars = []
+        star_import_collector = StarImportCollector()
+        star_import_collector.visit(node)
+        star_imports = star_import_collector.star_imports
 
-        def find_import_stars(node):
-            if node_type(node) == 'ImportFrom':
-                for binding in node.names:
-                    if binding.name == '*':
-                        import_stars.append(node)
-            else:
-                for_each_child(node, find_import_stars)
-
-        for_each_child(node, find_import_stars)
-
-        if import_stars:
+        if len(star_imports) > 0:
             print('\n--- %s ---' % path, file=sys.stderr)
 
-        for node in import_stars:
-            frompath = resolve_frompath(pkgpath, node.module, node.level)
-            ln = node.lineno - 1
-            start = node.col_offset
+            if method == 'replace':
+                star_destroyer = ReplaceStarDestroyer(self.import_map, self.all_used,
+                                                      pkgpath, modpath, star_imports)
+            elif method == 'qualify':
+                star_destroyer = QualifyStarDestroyer(self.import_map, self.all_used,
+                                                      pkgpath, modpath, star_imports, **kwd)
+            else:
+                return False
 
-            orig = original_lines[ln]
-            end = orig.index('*') + 1
-            names = [name for name in self.import_map.get_star_names(frompath)
-                     if modpath + '.' + name in self.all_used]
-            imp = ('from %s import %s' %
-                   ('.'*node.level + node.module, ', '.join(names))
-                   if names else '')
-            print('%s  ==>  %s' % (orig[start:end], imp or '(deleted)'),
-                  file=sys.stderr)
-            lines[ln] = (orig[:start] + imp + orig[end:]).rstrip()
-            lines[ln] += '\n' if lines[ln] else ''
+            star_destroyer.visit(node)
+            if len(star_destroyer.changes) > 0:
+                with open(path, 'r+') as module_file:
+                    lines = module_file.readlines()
+                    original_lines = lines[:]
+                    change_log = []
+                    for change in star_destroyer.changes:
+                        line = change[0].lineno - 1
+                        col = change[0].col_offset
+                        if node_to_text(change[0]) not in lines[line][col:]:
+                            print("Could not find change: {} to {} location in line {}:{}"
+                                  .format(node_to_text(change[0]), node_to_text(change[1]),
+                                          line + 1, col))
+                            print(lines[line])
+                            print(lines[line + 1])
+                            break
+                        else:
+                            """lines[line] = (lines[line][:change[0].col_offset] +
+                                           lines[line][change[0].col_offset].replace(
+                                               node_to_text(change[0]), node_to_text(change[1])))"""
+                            lines[line] = (lines[line][:change[0].col_offset] +
+                                           lines[line][change[0].col_offset:].replace(
+                                               node_to_text(change[0]), node_to_text(change[1])))
+                            change_log.append("Change \"{}\" to \"{}\" location in line {}"
+                                              .format(node_to_text(change[0]), node_to_text(change[1]), line + 1))
+                    else:
+                        print('\n'.join(change_log))
+                        if not dry_run and any(l1 == l2 for l1, l2 in zip(lines, original_lines)):
+                            module_file.seek(0)
+                            module_file.write(''.join(lines))
+                            module_file.truncate()
 
-        if lines != original_lines:
-            if actually_write:
-                with open(path, 'w') as file:
-                    file.write(''.join(lines))
-            return True
+                        return True
+                    return False
 
 
 def get_modules(root_path):
@@ -322,6 +471,7 @@ def get_modules(root_path):
                 else:
                     yield (pkgpath, modpath, path, node)
 
+
 def scan(root_path):
     modules = list(get_modules(root_path))
 
@@ -339,13 +489,15 @@ def scan(root_path):
 
     return modules, import_map, usage_map
 
-def edit(modules, import_map, usage_map, actually_write=False):
+
+def edit(modules, import_map, usage_map, method, dry_run=True, **kwd):
     # Finally, edit the 'import *' lines in all the modules.
+    print(dry_run)
     star_destroyer = StarDestroyer(import_map, usage_map)
     for (pkgpath, modpath, path, node) in modules:
         if star_destroyer.edit_module(
-            pkgpath, modpath, path, node, actually_write):
-            if actually_write:
+                pkgpath, modpath, path, node, method, dry_run, **kwd):
+            if not dry_run:
                 print('Edited %s' % path, file=sys.stderr)
 
 
@@ -356,30 +508,40 @@ def show_results(modules, import_map, usage_map):
     print('\n=== ORIGINS USED ===')
     usage_map.dump()
 
+
 if __name__ == '__main__':
-    args = sys.argv[1:]
-    if not args or '-h' in args or '--help' in args:
-        print(__doc__)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('-c', '--command', choices=('print', 'apply', 'dump'), default='print',
+                        help="The action to take: 'print' will compute all changes, but only"
+                             "print them. 'apply' will actually change the files and 'dump'"
+                             "will write the import- and usage-maps to disk for later use.")
+    parser.add_argument('-m', '--method', choices=('replace', 'qualify'), default='replace',
+                        help="Chose the behavior to use for removing star-imports. Replace will"
+                             "replace the star with a list of all usages from the module (and"
+                             "remove the import if that list would be empty). 'qualify' changes"
+                             "the code to import the module and qualify its members in the module"
+                             "by its name.")
+    parser.add_argument('-r', '--replacements', action='append', type=lambda kv: kv.split('='),
+                        help="A list ofkey=value pairs specifying module names and their"
+                             "replacements. For example: '-r numpy=np -r Tkinter=tk'")
+    parser.add_argument('root_path', help="The path to run the script on.")
+    parser.add_argument('import_map_path', nargs='?', help="Destination for writing the import-map.")
+    parser.add_argument('usage_map_path', nargs='?', help="Destination for writing the usage-map.")
+    args = parser.parse_args()
 
-    elif '-t' in args:
-        args.pop(args.index('-t'))
-        [root_path, import_map_path, usage_map_path] = args
+    module_aliases = {k: v for k, v in args.replacements}
 
+    if args.command == 'dump':
         import pickle
-        modules, import_map, usage_map = scan(root_path)
-        with open(import_map_path, 'wb') as out:
+        modules, import_map, usage_map = scan(args.root_path)
+        with open(args.import_map_path, 'wb') as out:
             pickle.dump(import_map.map, out)
-        with open(usage_map_path, 'wb') as out:
+        with open(args.usage_map_path, 'wb') as out:
             pickle.dump(usage_map.map, out)
-
-    elif '-e' in args:
-        args.pop(args.index('-e'))
-        [root_path] = args
-        modules, import_map, usage_map = scan(root_path)
-        edit(modules, import_map, usage_map, actually_write=True)
-
-    else:
-        [root_path] = args
-        modules, import_map, usage_map = scan(root_path)
+    elif args.command == 'apply':
+        modules, import_map, usage_map = scan(args.root_path)
+        edit(modules, import_map, usage_map, method=args.method, dry_run=False, module_aliases=module_aliases)
+    elif args.command == 'print':
+        modules, import_map, usage_map = scan(args.root_path)
         show_results(modules, import_map, usage_map)
-        edit(modules, import_map, usage_map, actually_write=False)
+        edit(modules, import_map, usage_map, method=args.method, dry_run=True, module_aliases=module_aliases)
