@@ -38,6 +38,7 @@ To run the tests, execute `py.test` using Python 2.7 or Python 3.5.
 from __future__ import print_function
 import argparse
 import ast
+import collections
 import importlib
 import os
 import sys
@@ -292,6 +293,8 @@ class BaseStarDestroyer(ast.NodeVisitor):
     applied transform the AST into a version without star-imports.
     """
 
+    AstChange = collections.namedtuple('AstChange', ('old', 'new'))
+
     def __init__(self, import_map, all_used, pkgpath, modpath, star_imports):
         """Creates an instance.
 
@@ -306,7 +309,16 @@ class BaseStarDestroyer(ast.NodeVisitor):
                                                    if modpath + '.' + name in all_used]
                                      for star_import in star_imports}
         self._provided_names = set.union(*list(set(names) for names in self._star_provided_names.values()))
-        self.changes = []
+        self.changes = dict()
+
+    def add_change(self, old_node, new_node):
+        """Adds the replacement of old_node by new_node to replacements."""
+        if old_node != new_node:
+            if new_node is not None:
+                ast.copy_location(new_node, old_node)
+            self.changes.setdefault(old_node.lineno - 1, []).append(
+                BaseStarDestroyer.AstChange(old_node, new_node))
+
 
 
 class QualifyStarDestroyer(BaseStarDestroyer):
@@ -328,10 +340,9 @@ class QualifyStarDestroyer(BaseStarDestroyer):
             if len(names) == 0:
                 new_node = node
             elif node.level == 0:
-
-                new_node = ast.Import(names=[ast.alias(name=node.module,
-                                                       asname=self._module_aliases.get(
-                                                           node.module.split('.')[-1]))])
+                last_module = node.module.split('.')[-1]
+                alias = self._module_aliases.get(last_module, last_module if last_module != node.module else None)
+                new_node = ast.Import(names=[ast.alias(name=node.module, asname=alias)])
             else:
                 modules = [module for module in node.module.split('.') if module != '']
                 module = '.' * node.level + '.'.join(modules[:-1]) if len(modules) > 1 else None
@@ -339,11 +350,8 @@ class QualifyStarDestroyer(BaseStarDestroyer):
                 new_node = ast.ImportFrom(module=module,
                                           names=[ast.alias(name=name, asname=self._module_aliases.get(name))],
                                           level=node.level)
+        self.add_change(node, new_node)
 
-        if node != new_node:
-            if new_node is not None:
-                ast.copy_location(new_node, node)
-            self.changes.append((node, new_node))
 
     def visit_Name(self, node):
         new_node = node
@@ -357,10 +365,7 @@ class QualifyStarDestroyer(BaseStarDestroyer):
                                                           providing_import.module.split('.')[-1])
             new_node = ast.Attribute(value=ast.Name(id=new_providing_name, ctx=ast.Load()), attr=node.id, ctx=node.ctx)
 
-        if node != new_node:
-            if new_node is not None:
-                ast.copy_location(new_node, node)
-            self.changes.append((node, new_node))
+        self.add_change(node, new_node)
 
 
 class ReplaceStarDestroyer(BaseStarDestroyer):
@@ -384,13 +389,13 @@ class ReplaceStarDestroyer(BaseStarDestroyer):
                                           names=[ast.alias(name=name, asname=None) for name in names],
                                           level=node.level)
 
-        if node != new_node:
-            if new_node is not None:
-                ast.copy_location(new_node, node)
-            self.changes.append((node, new_node))
+        self.add_change(node, new_node)
 
 
 class StarDestroyer:
+
+    LocalizedChange = collections.namedtuple('ChangeSpecification', ('start', 'end', 'old_value', 'replacement'))
+
     def __init__(self, import_map, usage_map):
         self.import_map = import_map
         self.usage_map = usage_map
@@ -418,38 +423,61 @@ class StarDestroyer:
 
             star_destroyer.visit(node)
             if len(star_destroyer.changes) > 0:
-                with open(path, 'r+') as module_file:
-                    lines = module_file.readlines()
-                    original_lines = lines[:]
-                    change_log = []
-                    for change in star_destroyer.changes:
-                        line = change[0].lineno - 1
-                        col = change[0].col_offset
-                        if node_to_text(change[0]) not in lines[line][col:]:
-                            print("Could not find change: {} to {} location in line {}:{}"
-                                  .format(node_to_text(change[0]), node_to_text(change[1]),
-                                          line + 1, col))
-                            print(lines[line])
-                            print(lines[line + 1])
-                            break
-                        else:
-                            """lines[line] = (lines[line][:change[0].col_offset] +
-                                           lines[line][change[0].col_offset].replace(
-                                               node_to_text(change[0]), node_to_text(change[1])))"""
-                            lines[line] = (lines[line][:change[0].col_offset] +
-                                           lines[line][change[0].col_offset:].replace(
-                                               node_to_text(change[0]), node_to_text(change[1])))
-                            change_log.append("Change \"{}\" to \"{}\" location in line {}"
-                                              .format(node_to_text(change[0]), node_to_text(change[1]), line + 1))
-                    else:
-                        print('\n'.join(change_log))
-                        if not dry_run and any(l1 == l2 for l1, l2 in zip(lines, original_lines)):
-                            module_file.seek(0)
-                            module_file.write(''.join(lines))
-                            module_file.truncate()
+                return StarDestroyer._apply_changes(path, star_destroyer.changes, dry_run)
 
-                        return True
-                    return False
+    @staticmethod
+    def _localize_changes(lines, changes):
+        """Localizes the changes in the corresponding lines"""
+        changes = {line_idx: [StarDestroyer.LocalizedChange(
+            change.old.col_offset,
+            change.old.col_offset + len(node_to_text(change.old)),
+            node_to_text(change.old),
+            node_to_text(change.new))
+                              for change in line_changes]
+                   for line_idx, line_changes in changes.items()}
+        invalid_changes = [(line_idx, change)
+                           for line_idx, line_changes in changes.items()
+                           for change in line_changes
+                           if lines[line_idx][change.start:change.end] != change.old_value]
+        if len(invalid_changes) != 0:
+            raise TypeError("Invalid changes: {}".format(invalid_changes))
+        return changes
+
+    @staticmethod
+    def _apply_changes(path, changes, dry_run=True):
+        """Applies given changes to a python module.
+
+        :param path: The path of the python file. Must correspond to the module the
+        :class:`BaseStarDestroyer` ran on.
+        :param changes: The changes as computed by a :class:`BaseStarDestroyer`.
+        """
+        with open(path, 'r+b') as module_file:
+            lines = module_file.readlines()
+            original_lines = lines[:]
+            change_log = []
+            try:
+                localized_changes = StarDestroyer._localize_changes(lines, changes)
+            except TypeError as e:
+                print(e.message)
+                return False
+            for line, line_changes in localized_changes.items():
+                # add phony start/end elements
+                extended_line_changes = ([StarDestroyer.LocalizedChange(None, 0, None, None)] +
+                                line_changes +
+                                [StarDestroyer.LocalizedChange(len(lines[line]), None, None, "")])
+                # iterate over pairs of current-/nextreplacement and interleave them with the original line
+                lines[line] = ''.join(lines[line][change_spec1.end:change_spec2.start] + change_spec2.replacement
+                        for change_spec1, change_spec2
+                        in zip(extended_line_changes[:-1], extended_line_changes[1:]))
+                change_log.append("Changing line {}: {}".format(line + 1, ', '.join(
+                        "column {}: \"{}\" to \"{}\"".format(change.start, change.old_value, change.replacement)
+                        for change in line_changes)))
+            print('\n'.join(change_log))
+            if not dry_run and any(l1 == l2 for l1, l2 in zip(lines, original_lines)):
+                module_file.seek(0)
+                module_file.writelines(lines)
+                module_file.truncate()
+            return True
 
 
 def get_modules(root_path):
@@ -492,7 +520,6 @@ def scan(root_path):
 
 def edit(modules, import_map, usage_map, method, dry_run=True, **kwd):
     # Finally, edit the 'import *' lines in all the modules.
-    print(dry_run)
     star_destroyer = StarDestroyer(import_map, usage_map)
     for (pkgpath, modpath, path, node) in modules:
         if star_destroyer.edit_module(
